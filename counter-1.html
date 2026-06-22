@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="theme-color" content="#0f0f0f" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Count</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0f0f0f; --surface: #1a1a1a; --border: #2a2a2a;
+      --accent: #c8f04a; --text: #f0f0f0; --muted: #666; --danger: #ff5f5f;
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; display: flex; flex-direction: column; }
+    header { padding: 20px 24px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 10px; }
+    header h1 { font-size: 13px; font-weight: 600; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
+    .live-badge { font-size: 10px; letter-spacing: 0.1em; color: var(--accent); text-transform: uppercase; display: flex; align-items: center; gap: 5px; }
+    .live-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.8s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .stats-bar { display: flex; border-bottom: 1px solid var(--border); }
+    .stat { flex: 1; padding: 14px 16px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+    .stat:last-child { border-right: none; }
+    .stat-value { font-size: 28px; font-weight: 700; color: var(--accent); line-height: 1; font-variant-numeric: tabular-nums; transition: transform 0.1s ease; }
+    .stat-value.bump { transform: scale(1.15); }
+    .stat-label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+    .editor-wrap { flex: 1; display: flex; flex-direction: column; }
+    textarea { flex: 1; width: 100%; background: transparent; border: none; outline: none; resize: none; color: var(--text); font-family: inherit; font-size: 16px; line-height: 1.65; padding: 20px 24px; caret-color: var(--accent); }
+    textarea::placeholder { color: var(--muted); }
+    .toolbar { display: flex; gap: 10px; padding: 14px 16px; border-top: 1px solid var(--border); background: var(--surface); }
+    button { border: none; border-radius: 6px; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; letter-spacing: 0.05em; transition: opacity 0.15s, transform 0.1s; padding: 12px 18px; }
+    button:active { transform: scale(0.96); }
+    .btn-paste { background: var(--accent); color: #0f0f0f; flex: 1; }
+    .btn-paste:hover { opacity: 0.88; }
+    .btn-clear { background: var(--border); color: var(--muted); padding: 12px 14px; }
+    .btn-clear:hover { color: var(--danger); background: #2a1a1a; }
+    .toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(10px); background: var(--surface); border: 1px solid var(--border); color: var(--text); font-size: 13px; padding: 10px 18px; border-radius: 8px; opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none; white-space: nowrap; }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Count</h1>
+  <span class="live-badge">live</span>
+</header>
+<div class="stats-bar">
+  <div class="stat"><span class="stat-value" id="charCount">0</span><span class="stat-label">Chars</span></div>
+  <div class="stat"><span class="stat-value" id="wordCount">0</span><span class="stat-label">Words</span></div>
+  <div class="stat"><span class="stat-value" id="lineCount">0</span><span class="stat-label">Lines</span></div>
+</div>
+<div class="editor-wrap">
+  <textarea id="editor" placeholder="Start typing, or paste from clipboard…" spellcheck="true" autocorrect="on"></textarea>
+</div>
+<div class="toolbar">
+  <button class="btn-paste" id="pasteBtn">⎘ Paste clipboard</button>
+  <button class="btn-clear" id="clearBtn" title="Clear">✕</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+  // Register service worker for offline support
+  if ('serviceWorker' in navigator) {
+    const swCode = `
+      const CACHE = 'count-v1';
+      self.addEventListener('install', e => {
+        e.waitUntil(caches.open(CACHE).then(c => c.addAll(['./', './index.html', './counter.html'])));
+        self.skipWaiting();
+      });
+      self.addEventListener('activate', e => {
+        e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))));
+        self.clients.claim();
+      });
+      self.addEventListener('fetch', e => {
+        e.respondWith(caches.match(e.request).then(r => r || fetch(e.request).then(res => {
+          const clone = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, clone));
+          return res;
+        }).catch(() => caches.match('./'))));
+      });
+    `;
+    const blob = new Blob([swCode], { type: 'application/javascript' });
+    const swUrl = URL.createObjectURL(blob);
+    navigator.serviceWorker.register(swUrl, { scope: './' }).catch(() => {});
+  }
+
+  const editor = document.getElementById('editor');
+  const charCount = document.getElementById('charCount');
+  const wordCount = document.getElementById('wordCount');
+  const lineCount = document.getElementById('lineCount');
+  const pasteBtn = document.getElementById('pasteBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const toast = document.getElementById('toast');
+  let toastTimer;
+
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+  }
+
+  function bump(el) {
+    el.classList.remove('bump');
+    void el.offsetWidth;
+    el.classList.add('bump');
+    setTimeout(() => el.classList.remove('bump'), 150);
+  }
+
+  function updateCounts() {
+    const text = editor.value;
+    const chars = text.length;
+    const words = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
+    const lines = text === '' ? 0 : text.split('\n').length;
+    if (charCount.textContent !== String(chars)) { charCount.textContent = chars; bump(charCount); }
+    if (wordCount.textContent !== String(words)) wordCount.textContent = words;
+    if (lineCount.textContent !== String(lines)) lineCount.textContent = lines;
+  }
+
+  editor.addEventListener('input', updateCounts);
+
+  pasteBtn.addEventListener('click', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      const start = editor.selectionStart;
+      const end = editor.selectionEnd;
+      editor.value = editor.value.slice(0, start) + text + editor.value.slice(end);
+      editor.selectionStart = editor.selectionEnd = start + text.length;
+      editor.focus();
+      updateCounts();
+      showToast(`Pasted ${text.length} chars`);
+    } catch (e) {
+      showToast('Tap & hold in the text box → Paste');
+    }
+  });
+
+  clearBtn.addEventListener('click', () => {
+    if (!editor.value) return;
+    editor.value = '';
+    updateCounts();
+    editor.focus();
+    showToast('Cleared');
+  });
+</script>
+</body>
+</html>
